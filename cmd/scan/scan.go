@@ -57,14 +57,7 @@ func main() {
 		}
 	}
 	cmd.template["TotalSegment"] = cmd.numWorkers
-	if workerQueueSizeStr != "" {
-		cmd.workerQueueSize, err = strconv.Atoi(workerQueueSizeStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	go func() {
+	go func() { // for pprof
 		_, _ = fmt.Fprintln(os.Stderr, http.ListenAndServe("localhost:6060", nil))
 	}()
 	err = do(cmd)
@@ -85,20 +78,36 @@ var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio
 
 func do(cmd cmdData) error {
 
-	workerChannels := make([]chan []byte, cmd.numWorkers)
+	lineOutChannel := make(chan []byte, cmd.workerQueueSize)
 	terminationChannel := make(chan error, cmd.numWorkers)
 	for i := 0; i < cmd.numWorkers; i++ {
-		workerChannels[i] = make(chan []byte, cmd.workerQueueSize)
 		template := make(map[string]interface{}, len(cmd.template)+1)
 		for k, v := range cmd.template {
 			template[k] = v
 		}
 		template["Segment"] = i
-		go worker(cmd, template, workerChannels[i], terminationChannel)
+		go worker(cmd, template, lineOutChannel, terminationChannel)
 	}
 
-	err := <-terminationChannel
-	return err
+	var terminationCount int
+	for {
+		select {
+		case err := <-terminationChannel:
+			if err != nil {
+				return err
+			}
+			terminationCount++
+			if terminationCount == cmd.numWorkers {
+				terminationChannel = nil
+				close(lineOutChannel)
+			}
+		case line, ok := <-lineOutChannel:
+			if !ok {
+				return nil
+			}
+			fmt.Printf("%s\n", line)
+		}
+	}
 }
 
 type Response struct {
@@ -128,15 +137,14 @@ func worker(cmd cmdData, template map[string]interface{}, ch chan<- []byte, term
 				termination <- err
 				return
 			}
-			//ch <- line
-			fmt.Println(string(line))
+			ch <- line
 		}
 		if response.LastItemIncluded == "TRUE" {
 			break
 		}
 		template["Marker"] = response.NextMarker
 	}
-	//close(ch)
+	termination <- nil
 }
 
 func getitems(cmd cmdData, body []byte, response *Response) error {
