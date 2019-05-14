@@ -16,7 +16,7 @@ import _ "net/http/pprof"
 type cmdData struct {
 	targetUrl       string
 	numWorkers      int
-	workerQueueSize int
+	outputQueueSize int
 	template        map[string]interface{}
 }
 
@@ -26,9 +26,8 @@ func main() {
 		return
 	}
 	cmd := cmdData{
-		targetUrl:       os.Args[1],
-		numWorkers:      64,
-		workerQueueSize: 64,
+		targetUrl:  os.Args[1],
+		numWorkers: 64,
 	}
 	var err error
 	numWorkersStr := os.Getenv("POSTTO_NUM_WORKERS")
@@ -39,9 +38,10 @@ func main() {
 			return
 		}
 	}
-	workerQueueSizeStr := os.Getenv("POSTTO_WORKER_QUEUE_SIZE")
+	cmd.outputQueueSize = cmd.numWorkers * 64
+	workerQueueSizeStr := os.Getenv("POSTTO_OUTPUT_QUEUE_SIZE")
 	if workerQueueSizeStr != "" {
-		cmd.workerQueueSize, err = strconv.Atoi(workerQueueSizeStr)
+		cmd.outputQueueSize, err = strconv.Atoi(workerQueueSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -78,7 +78,7 @@ var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio
 
 func do(cmd cmdData) error {
 
-	lineOutChannel := make(chan []byte, cmd.workerQueueSize)
+	lineOutChannel := make(chan []byte, cmd.outputQueueSize)
 	terminationChannel := make(chan error, cmd.numWorkers)
 	for i := 0; i < cmd.numWorkers; i++ {
 		template := make(map[string]interface{}, len(cmd.template)+1)
