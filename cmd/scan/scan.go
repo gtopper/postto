@@ -8,7 +8,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 )
 
@@ -88,11 +87,8 @@ func do(cmd cmdData) error {
 
 	workerChannels := make([]chan []byte, cmd.numWorkers)
 	terminationChannel := make(chan error, cmd.numWorkers)
-	selectCases := make([]reflect.SelectCase, cmd.numWorkers+1)
-	selectCases[0] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(terminationChannel)}
 	for i := 0; i < cmd.numWorkers; i++ {
 		workerChannels[i] = make(chan []byte, cmd.workerQueueSize)
-		selectCases[i+1] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(workerChannels[i])}
 		template := make(map[string]interface{}, len(cmd.template)+1)
 		for k, v := range cmd.template {
 			template[k] = v
@@ -101,18 +97,6 @@ func do(cmd cmdData) error {
 		go worker(cmd, template, workerChannels[i], terminationChannel)
 	}
 
-	//for len(selectCases) > 1 {
-	//	chosen, value, ok := reflect.Select(selectCases)
-	//	if chosen == 0 {
-	//		return value.Interface().(error)
-	//	}
-	//	if !ok {
-	//		selectCases[chosen] = selectCases[len(selectCases)-1]
-	//		selectCases = selectCases[:len(selectCases)-1]
-	//		continue
-	//	}
-	//	_, _ = fmt.Fprintln(os.Stdout, string(value.Bytes()))
-	//}
 	err := <-terminationChannel
 	return err
 }
