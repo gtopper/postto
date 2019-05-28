@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 )
 
 type cmdData struct {
@@ -91,11 +90,11 @@ readLoop:
 		} else if err != nil {
 			return err
 		}
-		if strings.TrimSpace(line) != "" {
-			bytes := []byte(line)
-			if !eof {
-				bytes = bytes[:len(bytes)-1]
-			}
+		bytes := []byte(line)
+		if !eof {
+			bytes = bytes[:len(bytes)-1]
+		}
+		if len(bytes) > 0 {
 			workerChannels[i] <- bytes
 		}
 		i++
