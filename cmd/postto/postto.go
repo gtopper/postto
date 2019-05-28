@@ -105,10 +105,14 @@ readLoop:
 	for i := 0; i < cmd.numWorkers; i++ {
 		close(workerChannels[i])
 	}
+	var err error
 	for i := 0; i < cmd.numWorkers; i++ {
-		<-terminationChannels[i]
+		errTmp := <-terminationChannels[i]
+		if errTmp != nil {
+			err = errTmp
+		}
 	}
-	return nil
+	return err
 }
 
 func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
