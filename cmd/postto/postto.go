@@ -92,7 +92,11 @@ readLoop:
 			return err
 		}
 		if strings.TrimSpace(line) != "" {
-			workerChannels[i] <- []byte(line)
+			bytes := []byte(line)
+			if !eof {
+				bytes = bytes[:len(bytes)-1]
+			}
+			workerChannels[i] <- bytes
 		}
 		i++
 		if i%cmd.numWorkers == 0 {
