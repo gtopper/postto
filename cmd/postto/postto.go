@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/base64"
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
@@ -14,7 +13,8 @@ import (
 type cmdData struct {
 	targetUrl       string
 	numWorkers      int
-	workerQueueSize int
+	lineChannelSize int
+	lineBatchSize   int
 }
 
 func main() {
@@ -25,7 +25,8 @@ func main() {
 	cmd := cmdData{
 		targetUrl:       os.Args[1],
 		numWorkers:      64,
-		workerQueueSize: 64,
+		lineChannelSize: 4096,
+		lineBatchSize:   1,
 	}
 	var err error
 	numWorkersStr := os.Getenv("POSTTO_NUM_WORKERS")
@@ -36,11 +37,23 @@ func main() {
 			return
 		}
 	}
-	workerQueueSizeStr := os.Getenv("POSTTO_WORKER_QUEUE_SIZE")
-	if workerQueueSizeStr != "" {
-		cmd.workerQueueSize, err = strconv.Atoi(workerQueueSizeStr)
+	lineChannelSizeStr := os.Getenv("POSTTO_LINE_CHANNEL_SIZE")
+	if lineChannelSizeStr != "" {
+		cmd.lineChannelSize, err = strconv.Atoi(lineChannelSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}
+	lineBatchSizeStr := os.Getenv("POSTTO_LINE_BATCH_SIZE")
+	if lineBatchSizeStr != "" {
+		cmd.lineBatchSize, err = strconv.Atoi(lineBatchSizeStr)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		if cmd.lineBatchSize < 1 {
+			_, _ = fmt.Fprintln(os.Stderr, "POSTTO_LINE_BATCH_SIZE must be larger than zero")
 			return
 		}
 	}
@@ -52,27 +65,26 @@ func main() {
 
 //const targetUrl = "http://192.168.224.90:8081/bigdata/samsung/poc2_table/"
 
-var password = func() string {
-	p := os.Getenv("V3IO_PASSWORD")
-	if p == "" {
-		return "datal@ke!"
-	}
-	return p
-}()
+//var password = func() string {
+//	p := os.Getenv("V3IO_PASSWORD")
+//	if p == "" {
+//		return "datal@ke!"
+//	}
+//	return p
+//}()
 
-var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
+//var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
 
 func do(cmd cmdData) error {
 
-	workerChannels := make([]chan []byte, cmd.numWorkers)
+	workersChannel := make(chan []byte, cmd.numWorkers*cmd.lineChannelSize)
 	terminationChannels := make([]chan error, cmd.numWorkers)
 	for i := 0; i < cmd.numWorkers; i++ {
-		workerChannels[i] = make(chan []byte, cmd.workerQueueSize)
 		terminationChannels[i] = make(chan error, 1)
-		go worker(cmd, workerChannels[i], terminationChannels[i])
+		go worker(cmd, workersChannel, terminationChannels[i])
 	}
 
-	//in, _ := os.Open("test.txt")
+	//in, _ := os.Open("/Users/galt/Downloads/haproxy_json_logs_small.txt")
 	in := os.Stdin
 	reader := bufio.NewReader(in)
 	eof := false
@@ -95,16 +107,14 @@ readLoop:
 			bytes = bytes[:len(bytes)-1]
 		}
 		if len(bytes) > 0 {
-			workerChannels[i] <- bytes
+			workersChannel <- bytes
 		}
 		i++
 		if i%cmd.numWorkers == 0 {
 			i = 0
 		}
 	}
-	for i := 0; i < cmd.numWorkers; i++ {
-		close(workerChannels[i])
-	}
+	close(workersChannel)
 	var err error
 	for i := 0; i < cmd.numWorkers; i++ {
 		errTmp := <-terminationChannels[i]
@@ -117,24 +127,37 @@ readLoop:
 
 func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
 	var err error
+	var lineBatch [][]byte
+	var i int
 	for entry := range ch {
-		err = post(cmd, entry)
-		if err != nil {
-			termination <- err
-			return
+		lineBatch = append(lineBatch, entry)
+		i++
+		if i == cmd.lineBatchSize {
+			err = post(cmd, lineBatch)
+			if err != nil {
+				termination <- err
+				return
+			}
+			i = 0
+			lineBatch = nil
 		}
 	}
 	termination <- nil
 }
 
-func post(cmd cmdData, entry []byte) error {
+func post(cmd cmdData, entry [][]byte) error {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 	req.SetRequestURI(cmd.targetUrl)
 	req.Header.SetMethod("POST")
-	req.Header.Set("Authorization", authorization)
-	req.Header.Set("X-v3io-function", "PutItem")
-	req.SetBody(entry)
+	//req.Header.Set("Authorization", authorization)
+	//req.Header.Set("X-v3io-function", "PutItem")
+	for i, e := range entry {
+		if i != len(entry)-1 {
+			e = append(e, '\n')
+		}
+		req.AppendBody(e)
+	}
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 	err := fasthttp.Do(req, resp)
