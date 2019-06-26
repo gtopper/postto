@@ -138,6 +138,9 @@ func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
 	var i int
 
 	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI(cmd.targetUrl)
 	req.Header.SetMethod("POST")
 
@@ -145,7 +148,7 @@ func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
 		lineBatch = append(lineBatch, entry)
 		i++
 		if i == cmd.lineBatchSize {
-			err = post(lineBatch, req)
+			err = post(lineBatch, req, resp)
 			if err != nil {
 				termination <- err
 				return
@@ -158,14 +161,13 @@ func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
 	termination <- nil
 }
 
-func post(entry [][]byte, req *fasthttp.Request) error {
+func post(entry [][]byte, req *fasthttp.Request, resp *fasthttp.Response) error {
 	for i, e := range entry {
 		if i != len(entry)-1 {
 			e = append(e, '\n')
 		}
 		req.AppendBody(e)
 	}
-	resp := fasthttp.AcquireResponse()
 	err := fasthttp.Do(req, resp)
 	if err != nil {
 		return errors.Wrap(err, "http error")
