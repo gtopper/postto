@@ -78,10 +78,9 @@ func main() {
 func do(cmd cmdData) error {
 
 	workersChannel := make(chan []byte, cmd.numWorkers*cmd.lineChannelSize)
-	terminationChannels := make([]chan error, cmd.numWorkers)
+	terminationChannel := make(chan error, cmd.numWorkers)
 	for i := 0; i < cmd.numWorkers; i++ {
-		terminationChannels[i] = make(chan error, 1)
-		go worker(cmd, workersChannel, terminationChannels[i])
+		go worker(cmd, workersChannel, terminationChannel)
 	}
 
 	//in, _ := os.Open("/Users/galt/Downloads/haproxy_json_logs_small.txt")
@@ -89,20 +88,28 @@ func do(cmd cmdData) error {
 	reader := bufio.NewReader(in)
 	eof := false
 	i := 0
+	terminationCount := 0
 readLoop:
 	for !eof {
-		for i := 0; i < cmd.numWorkers; i++ {
-			if len(terminationChannels[i]) > 0 {
-				break readLoop
+	checkTerminationLoop:
+		for {
+			select {
+			case <-terminationChannel:
+				terminationCount++
+				if terminationCount == cmd.numWorkers {
+					break readLoop
+				}
+			default:
+				break checkTerminationLoop
 			}
 		}
-		line, err := reader.ReadString('\n')
+
+		bytes, err := reader.ReadBytes('\n')
 		if err == io.EOF {
 			eof = true
 		} else if err != nil {
 			return err
 		}
-		bytes := []byte(line)
 		if !eof {
 			bytes = bytes[:len(bytes)-1]
 		}
@@ -117,7 +124,7 @@ readLoop:
 	close(workersChannel)
 	var err error
 	for i := 0; i < cmd.numWorkers; i++ {
-		errTmp := <-terminationChannels[i]
+		errTmp := <-terminationChannel
 		if errTmp != nil {
 			err = errTmp
 		}
@@ -144,6 +151,8 @@ func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
 	}
 	termination <- nil
 }
+
+//func postLoop()
 
 func post(cmd cmdData, entry [][]byte) error {
 	req := fasthttp.AcquireRequest()
