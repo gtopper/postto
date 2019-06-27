@@ -92,6 +92,8 @@ func main() {
 		}
 	}
 
+	fmt.Printf("Configuration: %+v\n", cmd)
+
 	go func() { // for pprof
 		_, _ = fmt.Fprintln(os.Stderr, http.ListenAndServe("localhost:6060", nil))
 	}()
