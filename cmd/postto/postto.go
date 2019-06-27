@@ -20,6 +20,7 @@ type cmdData struct {
 	numConcurrentRequests int
 	lineChannelSize       int
 	requestChannelSize    int
+	requestPoolSize       int
 	lineBatchSize         int
 }
 
@@ -34,6 +35,7 @@ func main() {
 		numConcurrentRequests: 8,
 		lineChannelSize:       1024,
 		requestChannelSize:    1024,
+		requestPoolSize:       1024,
 		lineBatchSize:         1,
 	}
 	var err error
@@ -56,6 +58,14 @@ func main() {
 	requestChannelSizeStr := os.Getenv("POSTTO_REQUEST_CHANNEL_SIZE")
 	if requestChannelSizeStr != "" {
 		cmd.requestChannelSize, err = strconv.Atoi(requestChannelSizeStr)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}
+	requestPoolSizeStr := os.Getenv("POSTTO_REQUEST_POOL_SIZE")
+	if requestPoolSizeStr != "" {
+		cmd.requestPoolSize, err = strconv.Atoi(requestPoolSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -107,13 +117,21 @@ func main() {
 func do(cmd cmdData) error {
 	lineChannel := make(chan []byte, cmd.lineChannelSize)
 	reqChannel := make(chan *fasthttp.Request, cmd.requestChannelSize)
+	availableReqChannel := make(chan *fasthttp.Request, cmd.requestPoolSize)
 	for i := 0; i < cmd.numRequestBuilders; i++ {
-		go buildRequests(cmd, lineChannel, reqChannel)
+		go buildRequests(cmd, lineChannel, reqChannel, availableReqChannel)
 	}
 
 	terminationChannel := make(chan error, cmd.numConcurrentRequests)
 	for i := 0; i < cmd.numConcurrentRequests; i++ {
-		go makeRequests(reqChannel, terminationChannel)
+		go makeRequests(reqChannel, availableReqChannel, terminationChannel)
+	}
+
+	for i := 0; i < cmd.requestPoolSize; i++ {
+		req := fasthttp.AcquireRequest()
+		req.SetRequestURI(cmd.targetUrl)
+		req.Header.SetMethod("POST")
+		availableReqChannel <- req
 	}
 
 	//in, _ := os.Open("/Users/galt/Downloads/haproxy_json_logs_small.txt")
@@ -165,22 +183,23 @@ readLoop:
 
 var requestBuilderCount int64
 
-func buildRequests(cmd cmdData, lineChan <-chan []byte, reqChan chan<- *fasthttp.Request) {
+func buildRequests(cmd cmdData, lineChan <-chan []byte, reqChan chan<- *fasthttp.Request, availableReqChan <-chan *fasthttp.Request) {
 	var i int
 	var req *fasthttp.Request
 	for line := range lineChan {
-		if i == 0 {
-			req = fasthttp.AcquireRequest()
-			req.SetRequestURI(cmd.targetUrl)
-			req.Header.SetMethod("POST")
-		}
 		i++
-		req.AppendBody(line)
+		if i != cmd.lineBatchSize {
+			line = append(line, '\n')
+		}
+		if i == 1 {
+			req = <-availableReqChan
+			req.SetBody(line)
+		} else {
+			req.AppendBody(line)
+		}
 		if i == cmd.lineBatchSize {
 			i = 0
 			reqChan <- req
-		} else {
-			line = append(line, '\n')
 		}
 	}
 	atomic.AddInt64(&requestBuilderCount, 1)
@@ -189,7 +208,7 @@ func buildRequests(cmd cmdData, lineChan <-chan []byte, reqChan chan<- *fasthttp
 	}
 }
 
-func makeRequests(reqChan <-chan *fasthttp.Request, terminationChan chan<- error) {
+func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fasthttp.Request, terminationChan chan<- error) {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
@@ -198,12 +217,12 @@ func makeRequests(reqChan <-chan *fasthttp.Request, terminationChan chan<- error
 		if err != nil {
 			terminationChan <- err
 		}
+		availableReqChan <- req
 	}
 	terminationChan <- nil
 }
 
 func post(req *fasthttp.Request, resp *fasthttp.Response) error {
-	defer fasthttp.ReleaseRequest(req)
 	err := fasthttp.Do(req, resp)
 	if err != nil {
 		return errors.Wrap(err, "http error")
