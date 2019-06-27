@@ -6,15 +6,21 @@ import (
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
+	"sync/atomic"
 )
 
+import _ "net/http/pprof"
+
 type cmdData struct {
-	targetUrl       string
-	numWorkers      int
-	lineChannelSize int
-	lineBatchSize   int
+	targetUrl             string
+	numRequestBuilders    int
+	numConcurrentRequests int
+	lineChannelSize       int
+	requestChannelSize    int
+	lineBatchSize         int
 }
 
 func main() {
@@ -23,15 +29,33 @@ func main() {
 		return
 	}
 	cmd := cmdData{
-		targetUrl:       os.Args[1],
-		numWorkers:      64,
-		lineChannelSize: 4096,
-		lineBatchSize:   1,
+		targetUrl:             os.Args[1],
+		numRequestBuilders:    1,
+		numConcurrentRequests: 8,
+		lineChannelSize:       1024,
+		requestChannelSize:    1024,
+		lineBatchSize:         1,
 	}
 	var err error
-	numWorkersStr := os.Getenv("POSTTO_NUM_WORKERS")
-	if numWorkersStr != "" {
-		cmd.numWorkers, err = strconv.Atoi(numWorkersStr)
+	numRequestBuildersStr := os.Getenv("POSTTO_NUM_REQUEST_BUILDERS")
+	if numRequestBuildersStr != "" {
+		cmd.numRequestBuilders, err = strconv.Atoi(numRequestBuildersStr)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}
+	numConcurrentRequestsStr := os.Getenv("POSTTO_NUM_CONCURRENT_REQUESTS")
+	if numConcurrentRequestsStr != "" {
+		cmd.numConcurrentRequests, err = strconv.Atoi(numConcurrentRequestsStr)
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return
+		}
+	}
+	requestChannelSizeStr := os.Getenv("POSTTO_REQUEST_CHANNEL_SIZE")
+	if requestChannelSizeStr != "" {
+		cmd.requestChannelSize, err = strconv.Atoi(requestChannelSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -57,6 +81,11 @@ func main() {
 			return
 		}
 	}
+
+	go func() { // for pprof
+		_, _ = fmt.Fprintln(os.Stderr, http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	err = do(cmd)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -76,27 +105,33 @@ func main() {
 //var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
 
 func do(cmd cmdData) error {
+	lineChannel := make(chan []byte, cmd.lineChannelSize)
+	reqChannel := make(chan *fasthttp.Request, cmd.requestChannelSize)
+	for i := 0; i < cmd.numRequestBuilders; i++ {
+		go buildRequests(cmd, lineChannel, reqChannel)
+	}
 
-	workersChannel := make(chan []byte, cmd.numWorkers*cmd.lineChannelSize)
-	terminationChannel := make(chan error, cmd.numWorkers)
-	for i := 0; i < cmd.numWorkers; i++ {
-		go worker(cmd, workersChannel, terminationChannel)
+	terminationChannel := make(chan error, cmd.numConcurrentRequests)
+	for i := 0; i < cmd.numConcurrentRequests; i++ {
+		go makeRequests(reqChannel, terminationChannel)
 	}
 
 	//in, _ := os.Open("/Users/galt/Downloads/haproxy_json_logs_small.txt")
 	in := os.Stdin
 	reader := bufio.NewReader(in)
 	eof := false
-	i := 0
 	terminationCount := 0
 readLoop:
 	for !eof {
 	checkTerminationLoop:
 		for {
 			select {
-			case <-terminationChannel:
+			case err := <-terminationChannel:
+				if err != nil {
+					return err
+				}
 				terminationCount++
-				if terminationCount == cmd.numWorkers {
+				if terminationCount == cmd.numConcurrentRequests {
 					break readLoop
 				}
 			default:
@@ -114,16 +149,12 @@ readLoop:
 			bytes = bytes[:len(bytes)-1]
 		}
 		if len(bytes) > 0 {
-			workersChannel <- bytes
-		}
-		i++
-		if i%cmd.numWorkers == 0 {
-			i = 0
+			lineChannel <- bytes
 		}
 	}
-	close(workersChannel)
+	close(lineChannel)
 	var err error
-	for i := 0; i < cmd.numWorkers; i++ {
+	for i := 0; i < cmd.numConcurrentRequests; i++ {
 		errTmp := <-terminationChannel
 		if errTmp != nil {
 			err = errTmp
@@ -132,42 +163,47 @@ readLoop:
 	return err
 }
 
-func worker(cmd cmdData, ch <-chan []byte, termination chan<- error) {
-	var err error
-	var lineBatch [][]byte
+var requestBuilderCount int64
+
+func buildRequests(cmd cmdData, lineChan <-chan []byte, reqChan chan<- *fasthttp.Request) {
 	var i int
-
-	req := fasthttp.AcquireRequest()
-	defer fasthttp.ReleaseRequest(req)
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
-	req.SetRequestURI(cmd.targetUrl)
-	req.Header.SetMethod("POST")
-
-	for entry := range ch {
-		lineBatch = append(lineBatch, entry)
+	var req *fasthttp.Request
+	for line := range lineChan {
+		if i == 0 {
+			req = fasthttp.AcquireRequest()
+			req.SetRequestURI(cmd.targetUrl)
+			req.Header.SetMethod("POST")
+		}
 		i++
+		req.AppendBody(line)
 		if i == cmd.lineBatchSize {
-			err = post(lineBatch, req, resp)
-			if err != nil {
-				termination <- err
-				return
-			}
-			req.SetBodyString("")
 			i = 0
-			lineBatch = nil
+			reqChan <- req
+		} else {
+			line = append(line, '\n')
 		}
 	}
-	termination <- nil
+	atomic.AddInt64(&requestBuilderCount, 1)
+	if requestBuilderCount == int64(cmd.numRequestBuilders) {
+		close(reqChan)
+	}
 }
 
-func post(entry [][]byte, req *fasthttp.Request, resp *fasthttp.Response) error {
-	for i, e := range entry {
-		if i != len(entry)-1 {
-			e = append(e, '\n')
+func makeRequests(reqChan <-chan *fasthttp.Request, terminationChan chan<- error) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	for req := range reqChan {
+		err := post(req, resp)
+		if err != nil {
+			terminationChan <- err
 		}
-		req.AppendBody(e)
 	}
+	terminationChan <- nil
+}
+
+func post(req *fasthttp.Request, resp *fasthttp.Response) error {
+	defer fasthttp.ReleaseRequest(req)
 	err := fasthttp.Do(req, resp)
 	if err != nil {
 		return errors.Wrap(err, "http error")
