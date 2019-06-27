@@ -9,16 +9,13 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync/atomic"
 )
 
 import _ "net/http/pprof"
 
 type cmdData struct {
 	targetUrl             string
-	numRequestBuilders    int
 	numConcurrentRequests int
-	lineChannelSize       int
 	requestChannelSize    int
 	requestPoolSize       int
 	lineBatchSize         int
@@ -31,22 +28,12 @@ func main() {
 	}
 	cmd := cmdData{
 		targetUrl:             os.Args[1],
-		numRequestBuilders:    1,
 		numConcurrentRequests: 8,
-		lineChannelSize:       1024,
 		requestChannelSize:    1024,
 		requestPoolSize:       1024,
 		lineBatchSize:         1,
 	}
 	var err error
-	numRequestBuildersStr := os.Getenv("POSTTO_NUM_REQUEST_BUILDERS")
-	if numRequestBuildersStr != "" {
-		cmd.numRequestBuilders, err = strconv.Atoi(numRequestBuildersStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
 	numConcurrentRequestsStr := os.Getenv("POSTTO_NUM_CONCURRENT_REQUESTS")
 	if numConcurrentRequestsStr != "" {
 		cmd.numConcurrentRequests, err = strconv.Atoi(numConcurrentRequestsStr)
@@ -66,14 +53,6 @@ func main() {
 	requestPoolSizeStr := os.Getenv("POSTTO_REQUEST_POOL_SIZE")
 	if requestPoolSizeStr != "" {
 		cmd.requestPoolSize, err = strconv.Atoi(requestPoolSizeStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	lineChannelSizeStr := os.Getenv("POSTTO_LINE_CHANNEL_SIZE")
-	if lineChannelSizeStr != "" {
-		cmd.lineChannelSize, err = strconv.Atoi(lineChannelSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -117,12 +96,8 @@ func main() {
 //var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
 
 func do(cmd cmdData) error {
-	lineChannel := make(chan []byte, cmd.lineChannelSize)
 	reqChannel := make(chan *fasthttp.Request, cmd.requestChannelSize)
 	availableReqChannel := make(chan *fasthttp.Request, cmd.requestPoolSize)
-	for i := 0; i < cmd.numRequestBuilders; i++ {
-		go buildRequests(cmd, lineChannel, reqChannel, availableReqChannel)
-	}
 
 	terminationChannel := make(chan error, cmd.numConcurrentRequests)
 	for i := 0; i < cmd.numConcurrentRequests; i++ {
@@ -140,40 +115,56 @@ func do(cmd cmdData) error {
 	in := os.Stdin
 	reader := bufio.NewReader(in)
 	eof := false
-	terminationCount := 0
-readLoop:
+	var err error
+	var req *fasthttp.Request
+	var lineCount int
 	for !eof {
 	checkTerminationLoop:
 		for {
 			select {
 			case err := <-terminationChannel:
-				if err != nil {
-					return err
-				}
-				terminationCount++
-				if terminationCount == cmd.numConcurrentRequests {
-					break readLoop
-				}
+				return err // Can never be nil
 			default:
 				break checkTerminationLoop
 			}
 		}
 
-		bytes, err := reader.ReadBytes('\n')
+		var isNewReq bool
+		if req == nil {
+			req = <-availableReqChannel
+			isNewReq = true
+		}
+		for {
+			var bytes []byte
+			bytes, err = reader.ReadSlice('\n')
+			if err == nil && lineCount == cmd.lineBatchSize-1 {
+				bytes = bytes[:len(bytes)-1] // drop last \n
+			}
+			if len(bytes) > 0 && (err == nil || err == bufio.ErrBufferFull) {
+				if isNewReq {
+					req.SetBody(bytes)
+				} else {
+					req.AppendBody(bytes)
+				}
+			}
+			if err != bufio.ErrBufferFull {
+				break
+			}
+		}
 		if err == io.EOF {
 			eof = true
+			err = nil
 		} else if err != nil {
 			return err
 		}
-		if !eof {
-			bytes = bytes[:len(bytes)-1]
-		}
-		if len(bytes) > 0 {
-			lineChannel <- bytes
+		lineCount++
+		if lineCount == cmd.lineBatchSize || eof {
+			reqChannel <- req
+			req = nil
+			lineCount = 0
 		}
 	}
-	close(lineChannel)
-	var err error
+	close(reqChannel)
 	for i := 0; i < cmd.numConcurrentRequests; i++ {
 		errTmp := <-terminationChannel
 		if errTmp != nil {
@@ -181,33 +172,6 @@ readLoop:
 		}
 	}
 	return err
-}
-
-var requestBuilderCount int64
-
-func buildRequests(cmd cmdData, lineChan <-chan []byte, reqChan chan<- *fasthttp.Request, availableReqChan <-chan *fasthttp.Request) {
-	var i int
-	var req *fasthttp.Request
-	for line := range lineChan {
-		i++
-		if i != cmd.lineBatchSize {
-			line = append(line, '\n')
-		}
-		if i == 1 {
-			req = <-availableReqChan
-			req.SetBody(line)
-		} else {
-			req.AppendBody(line)
-		}
-		if i == cmd.lineBatchSize {
-			i = 0
-			reqChan <- req
-		}
-	}
-	atomic.AddInt64(&requestBuilderCount, 1)
-	if requestBuilderCount == int64(cmd.numRequestBuilders) {
-		close(reqChan)
-	}
 }
 
 func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fasthttp.Request, terminationChan chan<- error) {
