@@ -69,7 +69,7 @@ func main() {
 
 	err = do(cmd)
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	}
 }
 
@@ -109,20 +109,14 @@ func do(cmd cmdData) error {
 	var req *fasthttp.Request
 	var lineCount int
 	for !eof {
-	checkTerminationLoop:
-		for {
-			select {
-			case err := <-terminationChannel:
-				return err // Can never be nil
-			default:
-				break checkTerminationLoop
-			}
-		}
-
 		var isNewReq bool
 		if req == nil {
-			req = <-availableReqChannel
-			isNewReq = true
+			select {
+			case req = <-availableReqChannel:
+				isNewReq = true
+			case err := <-terminationChannel:
+				return err
+			}
 		}
 		for {
 			var bytes []byte
@@ -145,7 +139,7 @@ func do(cmd cmdData) error {
 			eof = true
 			err = nil
 		} else if err != nil {
-			return err
+			return errors.Wrap(err, "error reading from file")
 		}
 		lineCount++
 		if lineCount == cmd.lineBatchSize || eof {
