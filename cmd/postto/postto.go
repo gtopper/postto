@@ -16,7 +16,6 @@ import _ "net/http/pprof"
 type cmdData struct {
 	targetUrl             string
 	numConcurrentRequests int
-	requestChannelSize    int
 	requestPoolSize       int
 	lineBatchSize         int
 }
@@ -29,7 +28,6 @@ func main() {
 	cmd := cmdData{
 		targetUrl:             os.Args[1],
 		numConcurrentRequests: 8,
-		requestChannelSize:    1024,
 		requestPoolSize:       1024,
 		lineBatchSize:         1,
 	}
@@ -37,14 +35,6 @@ func main() {
 	numConcurrentRequestsStr := os.Getenv("POSTTO_NUM_CONCURRENT_REQUESTS")
 	if numConcurrentRequestsStr != "" {
 		cmd.numConcurrentRequests, err = strconv.Atoi(numConcurrentRequestsStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	requestChannelSizeStr := os.Getenv("POSTTO_REQUEST_CHANNEL_SIZE")
-	if requestChannelSizeStr != "" {
-		cmd.requestChannelSize, err = strconv.Atoi(requestChannelSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			return
@@ -96,7 +86,7 @@ func main() {
 //var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
 
 func do(cmd cmdData) error {
-	reqChannel := make(chan *fasthttp.Request, cmd.requestChannelSize)
+	reqChannel := make(chan *fasthttp.Request, cmd.requestPoolSize)
 	availableReqChannel := make(chan *fasthttp.Request, cmd.requestPoolSize)
 
 	terminationChannel := make(chan error, cmd.numConcurrentRequests)
