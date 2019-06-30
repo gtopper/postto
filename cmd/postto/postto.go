@@ -108,12 +108,12 @@ func do(cmd cmdData) error {
 	var err error
 	var req *fasthttp.Request
 	var lineCount int
+	var isReqInitialized bool
 	for !eof {
-		var isNewReq bool
 		if req == nil {
 			select {
 			case req = <-availableReqChannel:
-				isNewReq = true
+				isReqInitialized = false
 			case err := <-terminationChannel:
 				return err
 			}
@@ -125,8 +125,9 @@ func do(cmd cmdData) error {
 				bytes = bytes[:len(bytes)-1] // drop last \n
 			}
 			if len(bytes) > 0 && (err == nil || err == bufio.ErrBufferFull) {
-				if isNewReq {
+				if !isReqInitialized {
 					req.SetBody(bytes)
+					isReqInitialized = true
 				} else {
 					req.AppendBody(bytes)
 				}
@@ -142,7 +143,7 @@ func do(cmd cmdData) error {
 			return errors.Wrap(err, "error reading from file")
 		}
 		lineCount++
-		if lineCount == cmd.lineBatchSize || eof {
+		if (lineCount == cmd.lineBatchSize || eof) && isReqInitialized {
 			reqChannel <- req
 			req = nil
 			lineCount = 0
