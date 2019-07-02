@@ -32,7 +32,6 @@ func main() {
 	cmd := cmdData{
 		targetUrl:             os.Args[1],
 		numConcurrentRequests: 8,
-		requestPoolSize:       1024,
 		lineBatchSize:         1,
 	}
 
@@ -53,6 +52,7 @@ func main() {
 			return
 		}
 	}
+	cmd.requestPoolSize = 2 * cmd.numConcurrentRequests
 	requestPoolSizeStr := os.Getenv("POSTTO_REQUEST_POOL_SIZE")
 	if requestPoolSizeStr != "" {
 		cmd.requestPoolSize, err = strconv.Atoi(requestPoolSizeStr)
