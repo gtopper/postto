@@ -7,14 +7,17 @@ import (
 	"github.com/valyala/fasthttp"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 )
 
 import _ "net/http/pprof"
 
 type cmdData struct {
 	targetUrl             string
+	headers               map[string]string
 	numConcurrentRequests int
 	requestPoolSize       int
 	lineBatchSize         int
@@ -25,13 +28,23 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "Usage: postto <url>")
 		return
 	}
+
 	cmd := cmdData{
 		targetUrl:             os.Args[1],
 		numConcurrentRequests: 8,
 		requestPoolSize:       1024,
 		lineBatchSize:         1,
 	}
-	var err error
+
+	targetUrl, err := url.Parse(cmd.targetUrl)
+	if err == nil && targetUrl.Scheme != "http" && targetUrl.Scheme != "https" {
+		err = errors.Errorf("unsupported scheme '%s'", targetUrl.Scheme)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Bad URL '%s': %v\n", cmd.targetUrl, err)
+		return
+	}
+
 	numConcurrentRequestsStr := os.Getenv("POSTTO_NUM_CONCURRENT_REQUESTS")
 	if numConcurrentRequestsStr != "" {
 		cmd.numConcurrentRequests, err = strconv.Atoi(numConcurrentRequestsStr)
@@ -60,6 +73,18 @@ func main() {
 			return
 		}
 	}
+	headersStr := os.Getenv("POSTTO_HEADERS")
+	if headersStr != "" {
+		cmd.headers = make(map[string]string)
+		for _, headerStr := range strings.Split(headersStr, ",") {
+			parts := strings.SplitN(headerStr, ":", 2)
+			if len(parts) < 2 {
+				_, _ = fmt.Fprintf(os.Stderr, "bad header '%s'\n", headerStr)
+				return
+			}
+			cmd.headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
 
 	fmt.Printf("Configuration: %+v\n", cmd)
 
@@ -72,18 +97,6 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	}
 }
-
-//const targetUrl = "http://192.168.224.90:8081/bigdata/samsung/poc2_table/"
-
-//var password = func() string {
-//	p := os.Getenv("V3IO_PASSWORD")
-//	if p == "" {
-//		return "datal@ke!"
-//	}
-//	return p
-//}()
-
-//var authorization = "Basic " + base64.StdEncoding.EncodeToString([]byte("iguazio:"+password))
 
 func do(cmd cmdData) error {
 	reqChannel := make(chan *fasthttp.Request, cmd.requestPoolSize)
@@ -98,10 +111,13 @@ func do(cmd cmdData) error {
 		req := fasthttp.AcquireRequest()
 		req.SetRequestURI(cmd.targetUrl)
 		req.Header.SetMethod("POST")
+		for key, value := range cmd.headers {
+			req.Header.Set(key, value)
+		}
 		availableReqChannel <- req
 	}
 
-	//in, _ := os.Open("/Users/galt/Downloads/haproxy_json_logs_small.txt")
+	//in, _ := os.Open("file.txt")
 	in := os.Stdin
 	reader := bufio.NewReader(in)
 	eof := false
