@@ -2,18 +2,18 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
-
-import _ "net/http/pprof"
 
 type cmdData struct {
 	targetUrl             string
@@ -22,6 +22,9 @@ type cmdData struct {
 	requestPoolSize       int
 	lineBatchSize         int
 }
+
+var count uint64
+var client fasthttp.HostClient
 
 func main() {
 	if len(os.Args) < 2 {
@@ -88,13 +91,29 @@ func main() {
 
 	fmt.Printf("Configuration: %+v\n", cmd)
 
-	go func() { // for pprof
-		_, _ = fmt.Fprintln(os.Stderr, http.ListenAndServe("localhost:6060", nil))
-	}()
+	client = fasthttp.HostClient{
+		Addr:      targetUrl.Host,
+		IsTLS:     targetUrl.Scheme == "https",
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+
+	go printAndResetLoop()
 
 	err = do(cmd)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	}
+}
+
+func printAndResetLoop() {
+	var lastCount uint64
+	for i := 1; true; i++ {
+		time.Sleep(5 * time.Second)
+		progress := count - lastCount
+		timePassed := i * 5
+		ratePerSec := float64(progress) / 5.0
+		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s]\n", count, timePassed, ratePerSec)
+		lastCount = count
 	}
 }
 
@@ -117,7 +136,7 @@ func do(cmd cmdData) error {
 		availableReqChannel <- req
 	}
 
-	//in, _ := os.Open("file.txt")
+	//in, _ := os.Open("test.txt")
 	in := os.Stdin
 	reader := bufio.NewReader(in)
 	eof := false
@@ -190,11 +209,12 @@ func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fas
 }
 
 func post(req *fasthttp.Request, resp *fasthttp.Response) error {
-	err := fasthttp.Do(req, resp)
+	err := client.Do(req, resp)
 	if err != nil {
 		return errors.Wrap(err, "http error")
 	} else if resp.StatusCode() >= 300 {
 		return errors.Errorf("status code not OK: Request:\n%v\nResponse:\n%v\n", req, resp)
 	}
+	atomic.AddUint64(&count, 1)
 	return nil
 }
