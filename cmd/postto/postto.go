@@ -24,6 +24,7 @@ type cmdData struct {
 }
 
 var count uint64
+var totalLatency uint64
 var client fasthttp.HostClient
 
 func main() {
@@ -106,14 +107,17 @@ func main() {
 }
 
 func printAndResetLoop() {
-	var lastCount uint64
+	var lastCount, lastTotalLatency uint64
 	for i := 1; true; i++ {
 		time.Sleep(5 * time.Second)
 		progress := count - lastCount
+		latencyChange := totalLatency - lastTotalLatency
 		timePassed := i * 5
 		ratePerSec := float64(progress) / 5.0
-		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s]\n", count, timePassed, ratePerSec)
+		latency := float64(latencyChange) / float64(progress)
+		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s] (latency %.2fms)\n", count, timePassed, ratePerSec, latency)
 		lastCount = count
+		lastTotalLatency = totalLatency
 	}
 }
 
@@ -209,12 +213,14 @@ func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fas
 }
 
 func post(req *fasthttp.Request, resp *fasthttp.Response) error {
+	start := time.Now()
 	err := client.Do(req, resp)
 	if err != nil {
 		return errors.Wrap(err, "http error")
 	} else if resp.StatusCode() >= 300 {
 		return errors.Errorf("status code not OK: Request:\n%v\nResponse:\n%v\n", req, resp)
 	}
+	atomic.AddUint64(&totalLatency, uint64(time.Now().Sub(start)/time.Millisecond))
 	atomic.AddUint64(&count, 1)
 	return nil
 }
