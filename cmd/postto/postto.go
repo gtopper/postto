@@ -26,6 +26,7 @@ type cmdData struct {
 var count uint64
 var totalLatency uint64
 var client fasthttp.HostClient
+var printPeriod = 5
 
 func main() {
 	if len(os.Args) < 2 {
@@ -89,6 +90,14 @@ func main() {
 			cmd.headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
+	printPeriodStr := os.Getenv("POSTTO_PRINT_PERIOD")
+	if printPeriodStr != "" {
+		printPeriod, err = strconv.Atoi(printPeriodStr)
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "bad print period '%s': %s\n", printPeriodStr, err.Error())
+			return
+		}
+	}
 
 	fmt.Printf("Configuration: %+v\n", cmd)
 
@@ -108,11 +117,13 @@ func main() {
 
 func printAndResetLoop() {
 	var lastCount, lastTotalLatency uint64
+	printPeriodFloat := float64(printPeriod)
+	sleepDuration := time.Duration(printPeriod) * time.Second
 	for i := 1; true; i++ {
-		time.Sleep(5 * time.Second)
+		time.Sleep(sleepDuration)
 		progress := count - lastCount
-		timePassed := i * 5
-		ratePerSec := float64(progress) / 5.0
+		timePassed := i * printPeriod
+		ratePerSec := float64(progress) / printPeriodFloat
 		var latencyString string
 		if progress > 0 {
 			latencyChange := totalLatency - lastTotalLatency
