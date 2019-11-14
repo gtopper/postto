@@ -111,11 +111,15 @@ func printAndResetLoop() {
 	for i := 1; true; i++ {
 		time.Sleep(5 * time.Second)
 		progress := count - lastCount
-		latencyChange := totalLatency - lastTotalLatency
 		timePassed := i * 5
 		ratePerSec := float64(progress) / 5.0
-		latency := float64(latencyChange) / float64(progress)
-		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s] (latency %.2fms)\n", count, timePassed, ratePerSec, latency)
+		var latencyString string
+		if progress > 0 {
+			latencyChange := totalLatency - lastTotalLatency
+			latency := float64(latencyChange) / float64(progress)
+			latencyString = fmt.Sprintf(" (latency %.3fms)", latency)
+		}
+		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s]%s\n", count, timePassed, ratePerSec, latencyString)
 		lastCount = count
 		lastTotalLatency = totalLatency
 	}
