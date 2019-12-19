@@ -21,6 +21,7 @@ type cmdData struct {
 	numConcurrentRequests int
 	requestPoolSize       int
 	lineBatchSize         int
+	getMode               bool
 }
 
 var count uint64
@@ -66,8 +67,14 @@ func main() {
 			return
 		}
 	}
+	getModeStr := strings.ToLower(os.Getenv("POSTTO_GET_MODE"))
+	cmd.getMode = getModeStr != "" && getModeStr != "false" && getModeStr != "off"
 	lineBatchSizeStr := os.Getenv("POSTTO_LINE_BATCH_SIZE")
 	if lineBatchSizeStr != "" {
+		if cmd.getMode {
+			_, _ = fmt.Fprintln(os.Stderr, "POSTTO_GET_MODE and POSTTO_LINE_BATCH_SIZE cannot be combined")
+			return
+		}
 		cmd.lineBatchSize, err = strconv.Atoi(lineBatchSizeStr)
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
@@ -145,10 +152,17 @@ func do(cmd cmdData) error {
 		go makeRequests(reqChannel, availableReqChannel, terminationChannel)
 	}
 
+	var method string
+	if cmd.getMode {
+		method = "GET"
+	} else {
+		method = "POST"
+	}
+
 	for i := 0; i < cmd.requestPoolSize; i++ {
 		req := fasthttp.AcquireRequest()
 		req.SetRequestURI(cmd.targetUrl)
-		req.Header.SetMethod("POST")
+		req.Header.SetMethod(method)
 		for key, value := range cmd.headers {
 			req.Header.Set(key, value)
 		}
@@ -179,11 +193,21 @@ func do(cmd cmdData) error {
 				bytes = bytes[:len(bytes)-1] // drop last \n
 			}
 			if len(bytes) > 0 && (err == nil || err == bufio.ErrBufferFull) {
-				if !isReqInitialized {
-					req.SetBody(bytes)
-					isReqInitialized = true
+				if cmd.getMode {
+					var reqUri string
+					if len(bytes) > 0 && bytes[0] == '/' {
+						reqUri = fmt.Sprintf("%s%s", cmd.targetUrl, bytes)
+					} else {
+						reqUri = fmt.Sprintf("%s/%s", cmd.targetUrl, bytes)
+					}
+					req.SetRequestURI(reqUri)
 				} else {
-					req.AppendBody(bytes)
+					if !isReqInitialized {
+						req.SetBody(bytes)
+						isReqInitialized = true
+					} else {
+						req.AppendBody(bytes)
+					}
 				}
 			}
 			if err != bufio.ErrBufferFull {
