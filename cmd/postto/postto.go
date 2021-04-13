@@ -11,6 +11,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -107,22 +108,42 @@ func main() {
 		TLSConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
-	go printAndResetLoop()
+	waitGroup := &sync.WaitGroup{}
+	waitGroup.Add(1)
+	terminationChan := make(chan struct{}, 1)
+	go printAndResetLoop(waitGroup, terminationChan)
 
 	err = do(cmd)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 	}
+
+	terminationChan <- struct{}{}
+	waitGroup.Wait()
 }
 
-func printAndResetLoop() {
+func printAndResetLoop(waitGroup *sync.WaitGroup, terminationChan <-chan struct{}) {
 	var lastCount, lastTotalLatency uint64
 	printPeriodFloat := float64(printPeriod)
 	sleepDuration := time.Duration(printPeriod) * time.Second
-	for i := 1; true; i++ {
-		time.Sleep(sleepDuration)
+	run := true
+	var timePassedString string
+	var timePassed float64
+	for i := 1; run; i++ {
+		var cycleStartTime = time.Now()
+		select {
+		case <-terminationChan:
+			if count == 0 {
+				break
+			}
+			run = false
+			cycleSecsElapsed := time.Now().Sub(cycleStartTime).Seconds()
+			timePassed = float64((i-1)*printPeriod) + cycleSecsElapsed
+			timePassedString = strconv.FormatFloat(timePassed, 'f', 2, 64)
+		case <-time.After(sleepDuration):
+			timePassedString = strconv.Itoa(i * printPeriod)
+		}
 		progress := count - lastCount
-		timePassed := i * printPeriod
 		ratePerSec := float64(progress) / printPeriodFloat
 		var latencyString string
 		if progress > 0 {
@@ -130,10 +151,17 @@ func printAndResetLoop() {
 			latency := float64(latencyChange) / float64(progress)
 			latencyString = fmt.Sprintf(" (latency %.3fms)", latency)
 		}
-		fmt.Printf("Received %d OK responses in %d seconds... [%.2f/s]%s\n", count, timePassed, ratePerSec, latencyString)
+		fmt.Printf("Received %d OK responses in %s seconds... [%.2f/s]%s\n", count, timePassedString, ratePerSec, latencyString)
 		lastCount = count
 		lastTotalLatency = totalLatency
 	}
+	if count > 0 {
+		ratePerSec := float64(count) / timePassed
+		latency := float64(totalLatency) / float64(count)
+		fmt.Printf("OVERALL %.2f/s (latency %.3fms)\n", ratePerSec, latency)
+	}
+
+	waitGroup.Done()
 }
 
 func do(cmd cmdData) error {
