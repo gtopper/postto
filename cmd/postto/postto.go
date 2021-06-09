@@ -258,7 +258,7 @@ func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fas
 
 func post(req *fasthttp.Request, resp *fasthttp.Response) error {
 	start := time.Now()
-	err := client.Do(req, resp)
+	err := client.DoRedirects(req, resp, 2)
 	if err != nil {
 		return errors.Wrap(err, "http error")
 	} else if resp.StatusCode() >= 300 {
