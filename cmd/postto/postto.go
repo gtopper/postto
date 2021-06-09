@@ -129,12 +129,13 @@ func printAndResetLoop(waitGroup *sync.WaitGroup, terminationChan <-chan struct{
 	run := true
 	var timePassedString string
 	var timePassed float64
+Loop:
 	for i := 1; run; i++ {
 		var cycleStartTime = time.Now()
 		select {
 		case <-terminationChan:
 			if count == 0 {
-				break
+				break Loop
 			}
 			run = false
 			cycleSecsElapsed := time.Now().Sub(cycleStartTime).Seconds()
