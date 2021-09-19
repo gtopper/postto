@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"github.com/pkg/errors"
 	"github.com/valyala/fasthttp"
@@ -27,61 +28,46 @@ type cmdData struct {
 var count uint64
 var totalLatency uint64
 var client fasthttp.HostClient
-var printPeriod = 5
+var printPeriod int
 
 func main() {
-	if len(os.Args) < 2 {
-		_, _ = fmt.Fprintln(os.Stderr, "Usage: postto <url>")
+	cmd := cmdData{}
+
+	var headersStr string
+
+	flag.IntVar(&cmd.numConcurrentRequests, "num-concurrent-requests", 8, "maximum number of concurrent requests")
+	flag.IntVar(&cmd.requestPoolSize, "request-pool-size", 0, "size of the request pool")
+	flag.IntVar(&cmd.lineBatchSize, "line-batch-size", 1, "number of lines to include in each request")
+	flag.StringVar(&headersStr, "headers", "", "request headers, e.g. ContentType:application/json,X-MyHeader:Hello")
+	flag.IntVar(&printPeriod, "print-period", 5, "how often to print the status, in seconds")
+
+	flag.Usage = func() {
+		_, _ = fmt.Fprintf(flag.CommandLine.Output(), "Usage of %s [options] <url>:\n", os.Args[0])
+		flag.PrintDefaults()
+	}
+
+	flag.Parse()
+
+	if cmd.requestPoolSize <= 0 {
+		cmd.requestPoolSize = 2 * cmd.numConcurrentRequests
+	}
+
+	if cmd.lineBatchSize < 1 {
+		_, _ = fmt.Fprintln(os.Stderr, "line-batch-size must be larger than zero")
 		return
 	}
 
-	cmd := cmdData{
-		targetUrl:             os.Args[1],
-		numConcurrentRequests: 8,
-		lineBatchSize:         1,
-	}
+	args := flag.Args()
 
-	targetUrl, err := url.Parse(cmd.targetUrl)
-	if err == nil && targetUrl.Scheme != "http" && targetUrl.Scheme != "https" {
-		err = errors.Errorf("unsupported scheme '%s'", targetUrl.Scheme)
-	}
-	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "Bad URL '%s': %v\n", cmd.targetUrl, err)
+	if len(args) != 1 {
+		flag.Usage()
 		return
 	}
 
-	numConcurrentRequestsStr := os.Getenv("POSTTO_NUM_CONCURRENT_REQUESTS")
-	if numConcurrentRequestsStr != "" {
-		cmd.numConcurrentRequests, err = strconv.Atoi(numConcurrentRequestsStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	cmd.requestPoolSize = 2 * cmd.numConcurrentRequests
-	requestPoolSizeStr := os.Getenv("POSTTO_REQUEST_POOL_SIZE")
-	if requestPoolSizeStr != "" {
-		cmd.requestPoolSize, err = strconv.Atoi(requestPoolSizeStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-	}
-	lineBatchSizeStr := os.Getenv("POSTTO_LINE_BATCH_SIZE")
-	if lineBatchSizeStr != "" {
-		cmd.lineBatchSize, err = strconv.Atoi(lineBatchSizeStr)
-		if err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-			return
-		}
-		if cmd.lineBatchSize < 1 {
-			_, _ = fmt.Fprintln(os.Stderr, "POSTTO_LINE_BATCH_SIZE must be larger than zero")
-			return
-		}
-	}
-	headersStr := os.Getenv("POSTTO_HEADERS")
+	cmd.targetUrl = args[0]
+
+	cmd.headers = make(map[string]string)
 	if headersStr != "" {
-		cmd.headers = make(map[string]string)
 		for _, headerStr := range strings.Split(headersStr, ",") {
 			parts := strings.SplitN(headerStr, ":", 2)
 			if len(parts) < 2 {
@@ -91,13 +77,14 @@ func main() {
 			cmd.headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
-	printPeriodStr := os.Getenv("POSTTO_PRINT_PERIOD")
-	if printPeriodStr != "" {
-		printPeriod, err = strconv.Atoi(printPeriodStr)
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "bad print period '%s': %s\n", printPeriodStr, err.Error())
-			return
-		}
+
+	targetUrl, err := url.Parse(cmd.targetUrl)
+	if err == nil && targetUrl.Scheme != "http" && targetUrl.Scheme != "https" {
+		err = errors.Errorf("unsupported scheme '%s'", targetUrl.Scheme)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "Bad URL '%s': %v\n", cmd.targetUrl, err)
+		return
 	}
 
 	fmt.Printf("Configuration: %+v\n", cmd)
