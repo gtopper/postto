@@ -19,6 +19,7 @@ import (
 
 type cmdData struct {
 	targetUrl             string
+	method                string
 	headers               map[string]string
 	numConcurrentRequests int
 	requestPoolSize       int
@@ -38,6 +39,7 @@ func main() {
 	flag.IntVar(&cmd.numConcurrentRequests, "num-concurrent-requests", 8, "maximum number of concurrent requests")
 	flag.IntVar(&cmd.requestPoolSize, "request-pool-size", 0, "size of the request pool")
 	flag.IntVar(&cmd.lineBatchSize, "line-batch-size", 1, "number of lines to include in each request")
+	flag.StringVar(&cmd.method, "method", "", "request method, e.g. GET")
 	flag.StringVar(&headersStr, "headers", "", "request headers, e.g. ContentType:application/json,X-MyHeader:Hello")
 	flag.IntVar(&printPeriod, "print-period", 5, "how often to print the status, in seconds")
 
@@ -65,6 +67,10 @@ func main() {
 	}
 
 	cmd.targetUrl = args[0]
+
+	if cmd.method == "" {
+		cmd.method = "POST"
+	}
 
 	cmd.headers = make(map[string]string)
 	if headersStr != "" {
@@ -164,7 +170,7 @@ func do(cmd cmdData) error {
 	for i := 0; i < cmd.requestPoolSize; i++ {
 		req := fasthttp.AcquireRequest()
 		req.SetRequestURI(cmd.targetUrl)
-		req.Header.SetMethod("POST")
+		req.Header.SetMethod(cmd.method)
 		for key, value := range cmd.headers {
 			req.Header.Set(key, value)
 		}
