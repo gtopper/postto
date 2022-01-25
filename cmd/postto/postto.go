@@ -17,6 +17,25 @@ import (
 	"time"
 )
 
+type StatusCodeWhitelist struct {
+	Codes      []int
+	CodeRanges [][]int
+}
+
+func (whitelist StatusCodeWhitelist) contains(code int) bool {
+	for _, whitelistedCodeRange := range whitelist.CodeRanges {
+		if code >= whitelistedCodeRange[0] && code <= whitelistedCodeRange[1] {
+			return true
+		}
+	}
+	for _, whitelistedCode := range whitelist.Codes {
+		if whitelistedCode == code {
+			return true
+		}
+	}
+	return false
+}
+
 type cmdData struct {
 	targetUrl             string
 	method                string
@@ -30,17 +49,21 @@ var count uint64
 var totalLatency uint64
 var client fasthttp.HostClient
 var printPeriod int
+var statusCodeWhitelist StatusCodeWhitelist
 
 func main() {
 	cmd := cmdData{}
 
 	var headersStr string
+	var statusCodeWhitelistStr string
 
 	flag.IntVar(&cmd.numConcurrentRequests, "num-concurrent-requests", 8, "maximum number of concurrent requests")
 	flag.IntVar(&cmd.requestPoolSize, "request-pool-size", 0, "size of the request pool")
 	flag.IntVar(&cmd.lineBatchSize, "line-batch-size", 1, "number of lines to include in each request")
-	flag.StringVar(&cmd.method, "method", "", "request method, e.g. GET")
+	flag.StringVar(&cmd.method, "method", "POST", "request method, e.g. GET")
 	flag.StringVar(&headersStr, "headers", "", "request headers, e.g. ContentType:application/json,X-MyHeader:Hello")
+	flag.StringVar(&statusCodeWhitelistStr, "status-code-whitelist", "200-299", "response status codes that will not "+
+		"trigger an error, e.g. 200-204,404")
 	flag.IntVar(&printPeriod, "print-period", 5, "how often to print the status, in seconds")
 
 	flag.Usage = func() {
@@ -68,10 +91,6 @@ func main() {
 
 	cmd.targetUrl = args[0]
 
-	if cmd.method == "" {
-		cmd.method = "POST"
-	}
-
 	cmd.headers = make(map[string]string)
 	if headersStr != "" {
 		for _, headerStr := range strings.Split(headersStr, ",") {
@@ -81,6 +100,38 @@ func main() {
 				return
 			}
 			cmd.headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+		}
+	}
+
+	rules := strings.Split(statusCodeWhitelistStr, ",")
+	for _, rule := range rules {
+		if strings.ContainsAny(rule, "-") {
+			parts := strings.Split(rule, "-")
+			if len(parts) != 2 {
+				_, _ = fmt.Fprintf(os.Stderr, "Bad range %s\n", statusCodeWhitelistStr)
+				return
+			}
+			lower, err := strconv.Atoi(parts[0])
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to parse %s in status code whitelist %s: %s\n",
+					parts[0], statusCodeWhitelistStr, err.Error())
+				return
+			}
+			upper, err := strconv.Atoi(parts[1])
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to parse %s in status code whitelist %s: %s\n",
+					parts[1], statusCodeWhitelistStr, err.Error())
+				return
+			}
+			statusCodeWhitelist.CodeRanges = append(statusCodeWhitelist.CodeRanges, []int{lower, upper})
+		} else {
+			code, err := strconv.Atoi(rule)
+			if err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "failed to parse %s in status code whitelist %s: %s\n",
+					rule, statusCodeWhitelistStr, err.Error())
+				return
+			}
+			statusCodeWhitelist.Codes = append(statusCodeWhitelist.Codes, code)
 		}
 	}
 
@@ -240,7 +291,7 @@ func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fas
 	defer fasthttp.ReleaseResponse(resp)
 
 	for req := range reqChan {
-		err := post(req, resp)
+		err := makeRequest(req, resp)
 		if err != nil {
 			terminationChan <- err
 		}
@@ -249,12 +300,12 @@ func makeRequests(reqChan <-chan *fasthttp.Request, availableReqChan chan<- *fas
 	terminationChan <- nil
 }
 
-func post(req *fasthttp.Request, resp *fasthttp.Response) error {
+func makeRequest(req *fasthttp.Request, resp *fasthttp.Response) error {
 	start := time.Now()
 	err := client.DoRedirects(req, resp, 2)
 	if err != nil {
 		return errors.Wrap(err, "http error")
-	} else if resp.StatusCode() >= 300 {
+	} else if !statusCodeWhitelist.contains(resp.StatusCode()) {
 		return errors.Errorf("status code not OK: Request:\n%v\nResponse:\n%v\n", req, resp)
 	}
 	atomic.AddUint64(&totalLatency, uint64(time.Now().Sub(start)/time.Millisecond))
