@@ -61,7 +61,7 @@ func main() {
 	flag.IntVar(&cmd.requestPoolSize, "request-pool-size", 0, "size of the request pool")
 	flag.IntVar(&cmd.lineBatchSize, "line-batch-size", 1, "number of lines to include in each request")
 	flag.StringVar(&cmd.method, "method", "POST", "request method, e.g. GET")
-	flag.StringVar(&headersStr, "headers", "", "request headers, e.g. ContentType:application/json,X-MyHeader:Hello")
+	flag.StringVar(&headersStr, "headers", "", "request headers, e.g. Content-Type:application/json,X-MyHeader:Hello")
 	flag.StringVar(&statusCodeWhitelistStr, "status-code-whitelist", "200-299", "response status codes that will not "+
 		"trigger an error, e.g. 200-204,404")
 	flag.IntVar(&printPeriod, "print-period", 5, "how often to print the status, in seconds")
